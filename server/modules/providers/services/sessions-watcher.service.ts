@@ -44,6 +44,13 @@ const WATCHER_IGNORED_PATTERNS = [
   '**/*.tmp',
   '**/*.swp',
   '**/.DS_Store',
+  // Claude writes subagent transcripts under
+  // `<projects>/<projectName>/<sessionId>/subagents/agent-*.jsonl`.
+  // Each subagent file's first line carries the parent session's
+  // `sessionId` + `cwd`, so the synchronizer would otherwise overwrite the
+  // parent row's `jsonl_path` to point at the subagent file — corrupting
+  // history reads until the next parent-file event restores it.
+  '**/subagents/**',
 ];
 
 const PROJECTS_UPDATE_DEBOUNCE_MS = 500;
@@ -71,7 +78,21 @@ function isWatcherTargetFile(provider: LLMProvider, filePath: string): boolean {
     return filePath.endsWith('.json') || filePath.endsWith('.jsonl');
   }
 
+  if (provider === 'claude' && isClaudeSubagentArtifact(filePath)) {
+    return false;
+  }
+
   return filePath.endsWith('.jsonl');
+}
+
+/**
+ * Detects Claude subagent transcript artifacts. These nest inside a parent
+ * session's directory and reuse the parent `sessionId` on every line, so they
+ * must never be indexed as standalone sessions.
+ */
+function isClaudeSubagentArtifact(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  return normalized.includes('/subagents/');
 }
 
 function clearPendingWatcherFlushTimer(): void {

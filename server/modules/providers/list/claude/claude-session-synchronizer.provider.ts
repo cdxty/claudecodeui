@@ -38,6 +38,10 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
 
     let processed = 0;
     for (const filePath of files) {
+      if (this.isSubagentArtifact(filePath)) {
+        continue;
+      }
+
       const parsed = await this.processSessionFile(filePath, nameMap);
       if (!parsed) {
         continue;
@@ -67,6 +71,14 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
+    // Subagent transcripts (`<session>/subagents/agent-*.jsonl`) carry the
+    // parent's sessionId on every line. Treat them as opaque child artifacts
+    // — never as standalone sessions — to avoid clobbering the parent row's
+    // `jsonl_path`. Belt-and-braces with the watcher ignore pattern.
+    if (this.isSubagentArtifact(filePath)) {
+      return null;
+    }
+
     const nameMap = await buildLookupMap(path.join(this.claudeHome, 'history.jsonl'), 'sessionId', 'display');
     const parsed = await this.processSessionFile(filePath, nameMap);
     if (!parsed) {
@@ -83,6 +95,15 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       timestamps.updatedAt,
       filePath
     );
+  }
+
+  /**
+   * Returns true for Claude subagent transcript artifacts, which nest under
+   * `<sessionId>/subagents/` and share the parent's `sessionId`. They must
+   * not be indexed as standalone sessions.
+   */
+  private isSubagentArtifact(filePath: string): boolean {
+    return filePath.replace(/\\/g, '/').includes('/subagents/');
   }
 
   /**
