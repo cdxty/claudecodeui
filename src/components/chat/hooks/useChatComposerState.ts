@@ -43,6 +43,46 @@ const QUEUE_LIMIT = 20;
 const createQueuedId = () =>
   `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+const queueStorageKey = (projectId: string) => `queued_messages_${projectId}`;
+
+// Persisted shape strips `attachedImages` because File objects can't survive
+// JSON serialization. Restored messages dispatch as text-only.
+type PersistedQueuedMessage = Omit<QueuedMessage, 'attachedImages'>;
+
+function serializeQueue(queue: QueuedMessage[]): string {
+  const stripped: PersistedQueuedMessage[] = queue.map(({ id, content, thinkingMode }) => ({
+    id,
+    content,
+    thinkingMode,
+  }));
+  return JSON.stringify(stripped);
+}
+
+function deserializeQueue(raw: string | null): QueuedMessage[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is PersistedQueuedMessage =>
+        typeof item === 'object' &&
+        item !== null &&
+        typeof (item as PersistedQueuedMessage).id === 'string' &&
+        typeof (item as PersistedQueuedMessage).content === 'string' &&
+        typeof (item as PersistedQueuedMessage).thinkingMode === 'string',
+      )
+      .slice(0, QUEUE_LIMIT)
+      .map((item) => ({ ...item, attachedImages: [] }));
+  } catch {
+    return [];
+  }
+}
+
+function readPersistedQueue(projectId: string | undefined): QueuedMessage[] {
+  if (typeof window === 'undefined' || !projectId) return [];
+  return deserializeQueue(safeLocalStorage.getItem(queueStorageKey(projectId)));
+}
+
 interface UseChatComposerStateArgs {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
@@ -157,7 +197,9 @@ export function useChatComposerState({
   const [imageErrors, setImageErrors] = useState<Map<string, string>>(new Map());
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
   const [thinkingMode, setThinkingMode] = useState('none');
-  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
+  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>(() =>
+    readPersistedQueue(selectedProject?.projectId),
+  );
   const [pendingDispatchId, setPendingDispatchId] = useState<string | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -838,6 +880,35 @@ export function useChatComposerState({
       safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
     }
   }, [input, selectedProjectId]);
+
+  // Reload the persisted queue when the user switches project, so each
+  // project keeps its own pending follow-ups across refreshes.
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setMessageQueue([]);
+      return;
+    }
+    setMessageQueue((previous) => {
+      const restored = readPersistedQueue(selectedProjectId);
+      // Avoid clobbering an in-memory queue that was just appended to before
+      // this effect runs (initializer already loaded the same data once).
+      if (previous.length === 0 && restored.length === 0) return previous;
+      return restored;
+    });
+  }, [selectedProjectId]);
+
+  // Persist queue changes. Attached images are stripped (File objects can't
+  // be JSON-serialized); restored messages dispatch as text-only.
+  useEffect(() => {
+    if (!selectedProjectId) {
+      return;
+    }
+    if (messageQueue.length === 0) {
+      safeLocalStorage.removeItem(queueStorageKey(selectedProjectId));
+    } else {
+      safeLocalStorage.setItem(queueStorageKey(selectedProjectId), serializeQueue(messageQueue));
+    }
+  }, [messageQueue, selectedProjectId]);
 
   useEffect(() => {
     if (!textareaRef.current) {
