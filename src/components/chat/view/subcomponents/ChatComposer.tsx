@@ -450,6 +450,8 @@ export default function ChatComposer({
             <PromptInputSubmit
               disabled={!input.trim()}
               status="ready"
+              aria-disabled={!input.trim()}
+              title={isLoading ? 'Queue message' : 'Send'}
               className="h-10 w-10 sm:h-10 sm:w-10"
               onMouseDown={(event) => {
                 event.preventDefault();
@@ -459,7 +461,11 @@ export default function ChatComposer({
                 event.preventDefault();
                 onSubmit(event as unknown as TouchEvent<HTMLButtonElement>);
               }}
-            />
+            >
+              {isLoading ? (
+                <ClockIcon className="h-4 w-4" />
+              ) : undefined}
+            </PromptInputSubmit>
           </div>
         </PromptInputFooter>
       </PromptInput>
