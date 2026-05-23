@@ -16,6 +16,7 @@ import { closeSessionsWatcher, initializeSessionsWatcher } from '@/modules/provi
 import { createWebSocketServer } from '@/modules/websocket/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
+import { getModelContextWindow } from '../shared/modelConstants.js';
 
 import { findAppRoot, getModuleDir } from './utils/runtime-paths.js';
 import {
@@ -1256,10 +1257,13 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
         const lines = fileContent.trim().split('\n');
 
         const parsedContextWindow = parseInt(process.env.CONTEXT_WINDOW, 10);
-        const contextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 160000;
+        const envOverride = Number.isFinite(parsedContextWindow) && parsedContextWindow > 0
+          ? parsedContextWindow
+          : null;
         let inputTokens = 0;
         let cacheCreationTokens = 0;
         let cacheReadTokens = 0;
+        let modelUsed = null;
 
         // Find the latest assistant message with usage data (scan from end)
         for (let i = lines.length - 1; i >= 0; i--) {
@@ -1274,6 +1278,7 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
                     inputTokens = usage.input_tokens || 0;
                     cacheCreationTokens = usage.cache_creation_input_tokens || 0;
                     cacheReadTokens = usage.cache_read_input_tokens || 0;
+                    modelUsed = entry.message?.model || null;
 
                     break; // Stop after finding the latest assistant message
                 }
@@ -1282,6 +1287,8 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
                 continue;
             }
         }
+
+        const contextWindow = envOverride ?? getModelContextWindow(modelUsed);
 
         // Calculate total context usage (excluding output_tokens, as per ccusage)
         const totalUsed = inputTokens + cacheCreationTokens + cacheReadTokens;

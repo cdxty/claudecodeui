@@ -17,7 +17,7 @@ import crypto from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
-import { CLAUDE_MODELS } from '../shared/modelConstants.js';
+import { CLAUDE_MODELS, getModelContextWindow } from '../shared/modelConstants.js';
 import { resolveClaudeCodeExecutablePath } from './shared/claude-cli-path.js';
 import {
   createNotificationEvent,
@@ -289,7 +289,7 @@ function transformMessage(sdkMessage) {
  * @param {Object} resultMessage - SDK result message
  * @returns {Object|null} Token budget object or null
  */
-function extractTokenBudget(resultMessage) {
+function extractTokenBudget(resultMessage, selectedModel) {
   if (resultMessage.type !== 'result' || !resultMessage.modelUsage) {
     return null;
   }
@@ -312,9 +312,14 @@ function extractTokenBudget(resultMessage) {
   // Total used = input + output + cache tokens
   const totalUsed = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
 
-  // Use configured context window budget from environment (default 160000)
-  // This is the user's budget limit, not the model's context window
-  const contextWindow = parseInt(process.env.CONTEXT_WINDOW) || 160000;
+  // Derive context window from the model actually in use. The user's selected
+  // model option (which preserves the `[1m]` marker) wins over the resolved
+  // model id returned by the SDK, since the latter strips beta hints.
+  // CONTEXT_WINDOW env, when set, overrides as an explicit cap.
+  const envOverride = parseInt(process.env.CONTEXT_WINDOW, 10);
+  const contextWindow = Number.isFinite(envOverride) && envOverride > 0
+    ? envOverride
+    : getModelContextWindow(selectedModel || modelKey);
 
   // Token calc logged via token-budget WS event
 
@@ -680,7 +685,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
         if (models.length > 0) {
           // Model info available in result message
         }
-        const tokenBudgetData = extractTokenBudget(message);
+        const tokenBudgetData = extractTokenBudget(message, sdkOptions.model);
         if (tokenBudgetData) {
           ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
         }

@@ -97,6 +97,20 @@ export const GEMINI_MODELS = {
 };
 
 /**
+ * Resolve the model's context-window size in tokens.
+ *
+ * Claude models are 200k by default; the `[1m]` / `1m` variants ship with the
+ * 1M-context beta. Returns 200k when the model is unknown. Callers that want
+ * a hard cap should layer `CONTEXT_WINDOW` env on top of this.
+ */
+export function getModelContextWindow(modelId) {
+  if (!modelId) return 200_000;
+  const s = String(modelId).toLowerCase();
+  if (s.includes('[1m]') || /(^|[-_\s])1m(\b|$)/.test(s)) return 1_000_000;
+  return 200_000;
+}
+
+/**
  * Ordered provider registry. Display order in selection UIs.
  */
 export const PROVIDERS = [

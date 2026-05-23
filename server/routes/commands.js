@@ -4,7 +4,7 @@ import path from 'path';
 
 import express from 'express';
 
-import { CLAUDE_MODELS, CURSOR_MODELS, CODEX_MODELS } from '../../shared/modelConstants.js';
+import { CLAUDE_MODELS, CURSOR_MODELS, CODEX_MODELS, getModelContextWindow } from '../../shared/modelConstants.js';
 import { parseFrontMatter } from '../shared/frontmatter.js';
 import { findAppRoot, getModuleDir } from '../utils/runtime-paths.js';
 
@@ -225,12 +225,12 @@ Custom commands can be created in:
           : CLAUDE_MODELS.DEFAULT);
 
     const used = Number(tokenUsage.used ?? tokenUsage.totalUsed ?? tokenUsage.total_tokens ?? 0) || 0;
+    const envOverride = parseInt(process.env.CONTEXT_WINDOW, 10);
+    const fallbackTotal = Number.isFinite(envOverride) && envOverride > 0
+      ? envOverride
+      : (provider === 'claude' ? getModelContextWindow(model) : 200_000);
     const total =
-      Number(
-        tokenUsage.total ??
-          tokenUsage.contextWindow ??
-          parseInt(process.env.CONTEXT_WINDOW || '160000', 10),
-      ) || 160000;
+      Number(tokenUsage.total ?? tokenUsage.contextWindow ?? fallbackTotal) || fallbackTotal;
     const percentage = total > 0 ? Number(((used / total) * 100).toFixed(1)) : 0;
 
     const inputTokensRaw =
