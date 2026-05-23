@@ -26,7 +26,47 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
     }
   }
 
+  // Second pass: aggregate subagent (Task) children from live-stream messages.
+  // The Claude SDK emits a subagent's internal tool_use/tool_result events
+  // tagged with `parentToolUseId`. They must not render as top-level chat
+  // bubbles — they belong nested inside the parent Task tool widget.
+  const liveSubagentTools = new Map<string, SubagentChildTool[]>();
+  const liveSubagentToolResults = new Map<string, NormalizedMessage>();
   for (const msg of messages) {
+    if (!msg.parentToolUseId) continue;
+    if (msg.kind === 'tool_result' && msg.toolId) {
+      liveSubagentToolResults.set(msg.toolId, msg);
+    }
+  }
+  for (const msg of messages) {
+    if (!msg.parentToolUseId) continue;
+    if (msg.kind !== 'tool_use') continue;
+    const parentId = msg.parentToolUseId;
+    const tr = msg.toolResult || (msg.toolId ? liveSubagentToolResults.get(msg.toolId) : null);
+    const child: SubagentChildTool = {
+      toolId: msg.toolId || '',
+      toolName: msg.toolName || '',
+      toolInput: msg.toolInput,
+      toolResult: tr
+        ? {
+            content: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content),
+            isError: Boolean(tr.isError),
+            toolUseResult: (tr as any).toolUseResult,
+          }
+        : null,
+      timestamp: new Date(msg.timestamp || Date.now()),
+    };
+    const arr = liveSubagentTools.get(parentId) || [];
+    arr.push(child);
+    liveSubagentTools.set(parentId, arr);
+  }
+
+  for (const msg of messages) {
+    // Skip any subagent-internal message — it must not render as a top-level
+    // chat bubble. Its content is surfaced inside the parent Task widget via
+    // the aggregated `subagentTools` array built above.
+    if (msg.parentToolUseId) continue;
+
     const sharedMetadata = {
       displayText: msg.displayText,
       commandName: msg.commandName,
@@ -81,7 +121,8 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
         const tr = msg.toolResult || (msg.toolId ? toolResultMap.get(msg.toolId) : null);
         const isSubagentContainer = msg.toolName === 'Task';
 
-        // Build child tools from subagentTools
+        // Build child tools from subagentTools (history path) merged with any
+        // live-stream subagent activity aggregated by parentToolUseId above.
         const childTools: SubagentChildTool[] = [];
         if (isSubagentContainer && msg.subagentTools && Array.isArray(msg.subagentTools)) {
           for (const tool of msg.subagentTools as any[]) {
@@ -92,6 +133,16 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
               toolResult: tool.toolResult || null,
               timestamp: new Date(tool.timestamp || Date.now()),
             });
+          }
+        }
+        if (isSubagentContainer && msg.toolId) {
+          const liveChildren = liveSubagentTools.get(msg.toolId);
+          if (liveChildren && liveChildren.length > 0) {
+            const seen = new Set(childTools.map((t) => t.toolId).filter(Boolean));
+            for (const child of liveChildren) {
+              if (child.toolId && seen.has(child.toolId)) continue;
+              childTools.push(child);
+            }
           }
         }
 
