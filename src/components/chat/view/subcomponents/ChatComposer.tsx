@@ -11,8 +11,9 @@ import type {
   SetStateAction,
   TouchEvent,
 } from 'react';
-import { ImageIcon, MessageSquareIcon, XIcon, ArrowDownIcon } from 'lucide-react';
+import { ImageIcon, MessageSquareIcon, XIcon, ArrowDownIcon, ClockIcon } from 'lucide-react';
 import type { PendingPermissionRequest, PermissionMode, Provider } from '../../types/types';
+import type { QueuedMessage } from '../../hooks/useChatComposerState';
 import CommandMenu from './CommandMenu';
 import ClaudeStatus from './ClaudeStatus';
 import ImageAttachment from './ImageAttachment';
@@ -101,6 +102,8 @@ interface ChatComposerProps {
   placeholder: string;
   isTextareaExpanded: boolean;
   sendByCtrlEnter?: boolean;
+  messageQueue: QueuedMessage[];
+  onRemoveQueuedMessage: (id: string) => void;
 }
 
 export default function ChatComposer({
@@ -156,6 +159,8 @@ export default function ChatComposer({
   placeholder,
   isTextareaExpanded,
   sendByCtrlEnter,
+  messageQueue,
+  onRemoveQueuedMessage,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
   const textareaRect = textareaRef.current?.getBoundingClientRect();
@@ -191,6 +196,50 @@ export default function ChatComposer({
             handlePermissionDecision={handlePermissionDecision}
             handleGrantToolPermission={handleGrantToolPermission}
           />
+        </div>
+      )}
+
+      {messageQueue.length > 0 && (
+        <div className="mx-auto mb-2 max-w-4xl">
+          <div className="flex flex-col gap-1.5 rounded-xl border border-border/40 bg-muted/30 p-2">
+            <div className="flex items-center gap-1.5 px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <ClockIcon className="h-3 w-3" />
+              <span>
+                {t('input.queued', {
+                  count: messageQueue.length,
+                  defaultValue: 'Queued ({{count}})',
+                })}
+              </span>
+            </div>
+            {messageQueue.map((item, index) => (
+              <div
+                key={item.id}
+                className="group flex items-start gap-2 rounded-lg bg-background/60 px-2 py-1.5"
+              >
+                <span className="mt-0.5 text-[10px] font-mono text-muted-foreground/70">
+                  {index + 1}.
+                </span>
+                <div className="flex-1 overflow-hidden text-sm text-foreground/90">
+                  <div className="line-clamp-2 whitespace-pre-wrap break-words">
+                    {item.content}
+                  </div>
+                  {item.attachedImages.length > 0 && (
+                    <div className="mt-0.5 text-[11px] text-muted-foreground">
+                      {item.attachedImages.length} image{item.attachedImages.length === 1 ? '' : 's'}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onRemoveQueuedMessage(item.id)}
+                  className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  title={t('input.removeQueued', { defaultValue: 'Remove from queue' })}
+                >
+                  <XIcon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -399,7 +448,8 @@ export default function ChatComposer({
               {sendByCtrlEnter ? t('input.hintText.ctrlEnter') : t('input.hintText.enter')}
             </div>
             <PromptInputSubmit
-              disabled={!input.trim() || isLoading}
+              disabled={!input.trim()}
+              status="ready"
               className="h-10 w-10 sm:h-10 sm:w-10"
               onMouseDown={(event) => {
                 event.preventDefault();

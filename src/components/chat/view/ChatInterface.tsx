@@ -171,6 +171,8 @@ function ChatInterface({
     handleGrantToolPermission,
     handleInputFocusChange,
     isInputFocused,
+    messageQueue,
+    removeQueuedMessage,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -410,6 +412,8 @@ function ChatInterface({
           })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
+          messageQueue={messageQueue}
+          onRemoveQueuedMessage={removeQueuedMessage}
         />
       </div>
 

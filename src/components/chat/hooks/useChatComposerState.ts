@@ -31,6 +31,18 @@ type PendingViewSession = {
   startedAt: number;
 };
 
+export interface QueuedMessage {
+  id: string;
+  content: string;
+  thinkingMode: string;
+  attachedImages: File[];
+}
+
+const QUEUE_LIMIT = 20;
+
+const createQueuedId = () =>
+  `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
 interface UseChatComposerStateArgs {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
@@ -145,6 +157,8 @@ export function useChatComposerState({
   const [imageErrors, setImageErrors] = useState<Map<string, string>>(new Map());
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
   const [thinkingMode, setThinkingMode] = useState('none');
+  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
+  const [pendingDispatchId, setPendingDispatchId] = useState<string | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const inputHighlightRef = useRef<HTMLDivElement>(null);
@@ -468,7 +482,48 @@ export function useChatComposerState({
     ) => {
       event.preventDefault();
       const currentInput = inputValueRef.current;
-      if (!currentInput.trim() || isLoading || !selectedProject) {
+      if (!currentInput.trim() || !selectedProject) {
+        return;
+      }
+
+      // Queue messages submitted while a turn is in flight; they dispatch
+      // in order once the current turn completes. Use a functional updater
+      // so the limit check sees the current queue (avoids a stale read and
+      // keeps `messageQueue` out of this callback's deps).
+      if (isLoading) {
+        let accepted = true;
+        setMessageQueue((previous) => {
+          if (previous.length >= QUEUE_LIMIT) {
+            accepted = false;
+            return previous;
+          }
+          return [
+            ...previous,
+            {
+              id: createQueuedId(),
+              content: currentInput,
+              thinkingMode,
+              attachedImages: [...attachedImages],
+            },
+          ];
+        });
+        if (!accepted) {
+          return;
+        }
+        setInput('');
+        inputValueRef.current = '';
+        setAttachedImages([]);
+        setUploadingImages(new Map());
+        setImageErrors(new Map());
+        setThinkingMode('none');
+        resetCommandMenuState();
+        setIsTextareaExpanded(false);
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+        }
+        if (selectedProject) {
+          safeLocalStorage.removeItem(`draft_input_${selectedProject.projectId}`);
+        }
         return;
       }
 
@@ -714,6 +769,53 @@ export function useChatComposerState({
     inputValueRef.current = input;
   }, [input]);
 
+  // Stage the next queued message into composer state whenever the
+  // composer is idle (no turn in flight, no draft in the textarea, no
+  // staged item already pending dispatch). The follow-up effect below
+  // observes the restored state and triggers handleSubmit.
+  useEffect(() => {
+    if (
+      isLoading ||
+      pendingDispatchId ||
+      messageQueue.length === 0 ||
+      input.trim() !== ''
+    ) {
+      return;
+    }
+
+    const next = messageQueue[0];
+    setMessageQueue((previous) => previous.slice(1));
+    setInput(next.content);
+    inputValueRef.current = next.content;
+    setThinkingMode(next.thinkingMode);
+    setAttachedImages(next.attachedImages);
+    setPendingDispatchId(next.id);
+  }, [isLoading, messageQueue, pendingDispatchId, input]);
+
+  // Dispatch the staged queued message once React has committed the
+  // restored state — handleSubmit reads `thinkingMode`/`attachedImages`
+  // from the latest memoized closure, so we wait until `input` matches.
+  useEffect(() => {
+    if (!pendingDispatchId || isLoading || !input.trim()) {
+      return;
+    }
+    setPendingDispatchId(null);
+    Promise.resolve().then(() => {
+      if (handleSubmitRef.current) {
+        handleSubmitRef.current(createFakeSubmitEvent());
+      }
+    });
+  }, [pendingDispatchId, input, isLoading]);
+
+  const removeQueuedMessage = useCallback((id: string) => {
+    setMessageQueue((previous) => previous.filter((item) => item.id !== id));
+  }, []);
+
+  const clearMessageQueue = useCallback(() => {
+    setMessageQueue([]);
+    setPendingDispatchId(null);
+  }, []);
+
   useEffect(() => {
     if (!selectedProjectId) {
       return;
@@ -855,6 +957,10 @@ export function useChatComposerState({
     if (!canAbortSession) {
       return;
     }
+    // Aborting is an explicit "stop" — drop pending queued messages so they
+    // don't dispatch after the abort completes.
+    setMessageQueue([]);
+    setPendingDispatchId(null);
 
     const pendingSessionId =
       typeof window !== 'undefined' ? sessionStorage.getItem('pendingSessionId') : null;
@@ -980,5 +1086,8 @@ export function useChatComposerState({
     handleGrantToolPermission,
     handleInputFocusChange,
     isInputFocused,
+    messageQueue,
+    removeQueuedMessage,
+    clearMessageQueue,
   };
 }
