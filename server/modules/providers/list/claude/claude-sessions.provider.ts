@@ -304,9 +304,30 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       return [createNormalizedMessage({ kind: 'stream_end', sessionId, provider: PROVIDER })];
     }
 
+    // Subagent provenance: transcript JSONL entries spawned inside a Task
+    // tool run carry `parent_tool_use_id` (snake_case on disk, camelCase when
+    // re-wrapped by the live SDK adapter). Every NormalizedMessage produced
+    // below inherits this tag so the UI can keep subagent activity nested
+    // inside the parent Task widget instead of polluting the top-level chat.
+    const parentToolUseId =
+      (typeof raw.parent_tool_use_id === 'string' && raw.parent_tool_use_id) ||
+      (typeof raw.parentToolUseId === 'string' && raw.parentToolUseId) ||
+      '';
+
     const messages: NormalizedMessage[] = [];
     const ts = raw.timestamp || new Date().toISOString();
     const baseId = raw.uuid || generateMessageId('claude');
+
+    const finalize = (): NormalizedMessage[] => {
+      if (parentToolUseId) {
+        for (const msg of messages) {
+          if (!msg.parentToolUseId) {
+            msg.parentToolUseId = parentToolUseId;
+          }
+        }
+      }
+      return messages;
+    };
 
     if (raw.message?.role === 'user' && raw.message?.content && raw.isMeta !== true) {
       if (Array.isArray(raw.message.content)) {
@@ -381,7 +402,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
             content: text,
             isCompactSummary: true,
           }));
-          return messages;
+          return finalize();
         }
 
         /**
@@ -408,7 +429,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
               isLocalCommand: true,
             }));
           }
-          return messages;
+          return finalize();
         }
 
         /**
@@ -432,7 +453,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
               isLocalCommandStdout: true,
             }));
           }
-          return messages;
+          return finalize();
         }
 
         if (text && !isInternalContent(text)) {
@@ -447,7 +468,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
           }));
         }
       }
-      return messages;
+      return finalize();
     }
 
     if (raw.type === 'thinking' && raw.message?.content) {
@@ -459,7 +480,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         kind: 'thinking',
         content: raw.message.content,
       }));
-      return messages;
+      return finalize();
     }
 
     if (raw.type === 'tool_use' && raw.toolName) {
@@ -473,7 +494,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         toolInput: raw.toolInput,
         toolId: raw.toolCallId || baseId,
       }));
-      return messages;
+      return finalize();
     }
 
     if (raw.type === 'tool_result') {
@@ -487,7 +508,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         content: raw.output || '',
         isError: false,
       }));
-      return messages;
+      return finalize();
     }
 
     if (raw.message?.role === 'assistant' && raw.message?.content) {
@@ -538,10 +559,10 @@ export class ClaudeSessionsProvider implements IProviderSessions {
           content: raw.message.content,
         }));
       }
-      return messages;
+      return finalize();
     }
 
-    return messages;
+    return finalize();
   }
 
   /**

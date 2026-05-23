@@ -139,6 +139,12 @@ export type NormalizedMessage = {
   summary?: string;
   tokenBudget?: unknown;
   subagentTools?: unknown;
+  /**
+   * Tags subagent (Task) child events with the parent tool_use id so the UI
+   * can keep them nested inside the parent Task widget instead of polluting
+   * the top-level chat transcript.
+   */
+  parentToolUseId?: string;
   toolUseResult?: unknown;
   sequence?: number;
   rowid?: number;
