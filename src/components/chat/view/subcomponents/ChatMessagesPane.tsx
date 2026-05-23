@@ -97,31 +97,43 @@ export default function ChatMessagesPane({
   selectedProject,
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
-  const messageKeyMapRef = useRef<WeakMap<ChatMessage, string>>(new WeakMap());
+  // Cache keys by *intrinsic identifier* (toolId / id / synthesized
+  // timestamp+content), NOT by ChatMessage object reference. The chat list is
+  // rebuilt as fresh ChatMessage objects on every store update, so a WeakMap
+  // keyed on the object would never hit — which used to push every render
+  // through the dedup-counter branch and hand the same logical message a
+  // brand-new key, remounting <MessageComponent> and resetting its
+  // uncontrolled Collapsible state (collapsing expanded subagent panels).
+  const messageKeyByIntrinsicRef = useRef<Map<string, string>>(new Map());
   const allocatedKeysRef = useRef<Set<string>>(new Set());
   const generatedMessageKeyCounterRef = useRef(0);
 
-  // Keep keys stable across prepends so existing MessageComponent instances retain local state.
+  // Keep keys stable across re-renders so existing MessageComponent instances
+  // retain local (uncontrolled) state such as expanded Collapsibles.
   const getMessageKey = useCallback((message: ChatMessage) => {
-    const existingKey = messageKeyMapRef.current.get(message);
-    if (existingKey) {
-      return existingKey;
-    }
-
     const intrinsicKey = getIntrinsicMessageKey(message);
-    let candidateKey = intrinsicKey;
 
-    if (!candidateKey || allocatedKeysRef.current.has(candidateKey)) {
-      do {
-        generatedMessageKeyCounterRef.current += 1;
-        candidateKey = intrinsicKey
-          ? `${intrinsicKey}-${generatedMessageKeyCounterRef.current}`
-          : `message-generated-${generatedMessageKeyCounterRef.current}`;
-      } while (allocatedKeysRef.current.has(candidateKey));
+    if (intrinsicKey) {
+      const cached = messageKeyByIntrinsicRef.current.get(intrinsicKey);
+      if (cached) {
+        return cached;
+      }
+
+      messageKeyByIntrinsicRef.current.set(intrinsicKey, intrinsicKey);
+      allocatedKeysRef.current.add(intrinsicKey);
+      return intrinsicKey;
     }
+
+    // No stable identifier — fall back to a one-shot generated key. Two
+    // anonymous messages with identical content/timestamp are rare; they'll
+    // each get their own counter-suffixed key and stay distinct.
+    let candidateKey: string;
+    do {
+      generatedMessageKeyCounterRef.current += 1;
+      candidateKey = `message-generated-${generatedMessageKeyCounterRef.current}`;
+    } while (allocatedKeysRef.current.has(candidateKey));
 
     allocatedKeysRef.current.add(candidateKey);
-    messageKeyMapRef.current.set(message, candidateKey);
     return candidateKey;
   }, []);
 
