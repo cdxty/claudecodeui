@@ -552,8 +552,16 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
 /**
  * Get configuration for a tool, with fallback to default
  */
+// The Claude SDK renamed the subagent invocation tool from `Task` to
+// `Agent`; alias the lookup so older and newer names share one config and
+// don't fall through to the generic Default ("Parameters") renderer.
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  Agent: 'Task',
+};
+
 export function getToolConfig(toolName: string): ToolDisplayConfig {
-  return TOOL_CONFIGS[toolName] || TOOL_CONFIGS.Default;
+  const resolved = TOOL_NAME_ALIASES[toolName] || toolName;
+  return TOOL_CONFIGS[resolved] || TOOL_CONFIGS.Default;
 }
 
 /**

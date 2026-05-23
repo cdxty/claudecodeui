@@ -119,7 +119,11 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
 
       case 'tool_use': {
         const tr = msg.toolResult || (msg.toolId ? toolResultMap.get(msg.toolId) : null);
-        const isSubagentContainer = msg.toolName === 'Task';
+        // The Claude SDK has renamed the subagent invocation tool from `Task`
+        // to `Agent` (older transcripts still use `Task`). Treat both names
+        // as subagent containers so the dedicated SubagentContainer widget
+        // is selected instead of the generic Default fallback.
+        const isSubagentContainer = msg.toolName === 'Task' || msg.toolName === 'Agent';
 
         // Build child tools from subagentTools (history path) merged with any
         // live-stream subagent activity aggregated by parentToolUseId above.
