@@ -42,6 +42,20 @@ const parseSessionId = (value: unknown): string => {
   return sessionId;
 };
 
+const TOOL_USE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,200}$/;
+
+const parseToolUseId = (value: unknown): string => {
+  const toolUseId = readPathParam(value, 'toolUseId').trim();
+  if (!TOOL_USE_ID_PATTERN.test(toolUseId)) {
+    throw new AppError('Invalid toolUseId.', {
+      code: 'INVALID_TOOL_USE_ID',
+      statusCode: 400,
+    });
+  }
+
+  return toolUseId;
+};
+
 const readOptionalQueryString = (value: unknown): string | undefined => {
   if (typeof value !== 'string') {
     return undefined;
@@ -400,6 +414,34 @@ router.get(
       offset,
     });
     res.json(result);
+  }),
+);
+
+router.get(
+  '/sessions/:sessionId/subagents/by-tool-use/:toolUseId',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const toolUseId = parseToolUseId(req.params.toolUseId);
+
+    const agentId = await sessionsService.resolveSubagentIdByToolUseId(sessionId, toolUseId);
+    if (!agentId) {
+      // Transient state — the SDK hasn't written the meta sidecar yet.
+      // Use a dedicated code so the UI can render a "not ready" hint
+      // instead of a generic error.
+      throw new AppError(`Subagent for tool use "${toolUseId}" is not yet available.`, {
+        code: 'SUBAGENT_NOT_READY',
+        statusCode: 404,
+      });
+    }
+
+    const transcript = await sessionsService.fetchSubagentTranscript(sessionId, agentId);
+    if (!transcript) {
+      throw new AppError(`Subagent "${agentId}" was not found for session "${sessionId}".`, {
+        code: 'SUBAGENT_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    res.json(transcript);
   }),
 );
 

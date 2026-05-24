@@ -74,6 +74,10 @@ export const api = {
     const queryString = params.toString();
     return authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/messages${queryString ? `?${queryString}` : ''}`);
   },
+  subagentTranscriptByToolUse: (sessionId, toolUseId) =>
+    authenticatedFetch(
+      `/api/providers/sessions/${encodeURIComponent(sessionId)}/subagents/by-tool-use/${encodeURIComponent(toolUseId)}`,
+    ),
   renameProject: (projectId, displayName) =>
     authenticatedFetch(`/api/projects/${projectId}/rename`, {
       method: 'PUT',

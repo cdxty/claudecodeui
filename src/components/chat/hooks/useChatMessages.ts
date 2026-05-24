@@ -168,6 +168,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           toolId: msg.toolId,
           toolResult,
           isSubagentContainer,
+          subagentParentSessionId: isSubagentContainer ? msg.sessionId : undefined,
           subagentState: isSubagentContainer
             ? {
                 childTools,

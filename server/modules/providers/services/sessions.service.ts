@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
+import type { SubagentTranscript } from '@/shared/interfaces.js';
 import type {
   FetchHistoryOptions,
   FetchHistoryResult,
@@ -112,6 +113,55 @@ export const sessionsService = {
       offset: options.offset ?? 0,
       projectPath: session.project_path ?? '',
     });
+  },
+
+  /**
+   * Fetches a subagent transcript for one parent session. Resolves the
+   * concrete provider through the indexed session row and returns null when
+   * the provider has no subagent concept.
+   */
+  async fetchSubagentTranscript(
+    parentSessionId: string,
+    agentId: string,
+  ): Promise<SubagentTranscript | null> {
+    const session = sessionsDb.getSessionById(parentSessionId);
+    if (!session) {
+      throw new AppError(`Session "${parentSessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    const provider = session.provider as LLMProvider;
+    const sessions = providerRegistry.resolveProvider(provider).sessions;
+    if (typeof sessions.fetchSubagentTranscript !== 'function') {
+      return null;
+    }
+    return sessions.fetchSubagentTranscript(parentSessionId, agentId);
+  },
+
+  /**
+   * Resolves a Task `tool_use_id` from the parent session to the agentId of
+   * the subagent it spawned. Returns null when the link isn't established
+   * yet — the caller should treat this as a transient "not ready" state.
+   */
+  async resolveSubagentIdByToolUseId(
+    parentSessionId: string,
+    toolUseId: string,
+  ): Promise<string | null> {
+    const session = sessionsDb.getSessionById(parentSessionId);
+    if (!session) {
+      throw new AppError(`Session "${parentSessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    const provider = session.provider as LLMProvider;
+    const sessions = providerRegistry.resolveProvider(provider).sessions;
+    if (typeof sessions.resolveAgentIdByToolUseId !== 'function') {
+      return null;
+    }
+    return sessions.resolveAgentIdByToolUseId(parentSessionId, toolUseId);
   },
 
   /**

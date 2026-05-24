@@ -48,6 +48,11 @@ export interface ChatMessage {
   isLocalCommandStdout?: boolean;
   isCompactSummary?: boolean;
   isSubagentContainer?: boolean;
+  /**
+   * Parent session id; carried so the subagent transcript fetch can scope
+   * to the right session directory without a separate context.
+   */
+  subagentParentSessionId?: string;
   subagentState?: {
     childTools: SubagentChildTool[];
     currentToolIndex: number;

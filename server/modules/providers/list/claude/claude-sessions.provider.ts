@@ -3,7 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
 
-import type { IProviderSessions } from '@/shared/interfaces.js';
+import type { IProviderSessions, SubagentTranscript } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
 import { createNormalizedMessage, generateMessageId, readObjectRecord } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
@@ -101,6 +101,55 @@ async function parseAgentTools(filePath: string): Promise<AnyRecord[]> {
   return tools;
 }
 
+/**
+ * Indexes subagent meta sidecars by their parent Task `tool_use_id`.
+ *
+ * Claude writes one `agent-<agentId>.meta.json` per subagent run alongside the
+ * matching `.jsonl` transcript. Each meta sidecar carries `{toolUseId,
+ * agentType, description}` so we can resolve "which subagent file backs this
+ * Task tool result" without grepping the textual agent response.
+ *
+ * The `toolUseResult.agentId` field the older code path used isn't actually
+ * present in current transcripts — the meta sidecar is the only stable link.
+ */
+async function readSubagentIndex(subagentDir: string): Promise<Map<string, { agentId: string; agentType?: string; description?: string }>> {
+  const index = new Map<string, { agentId: string; agentType?: string; description?: string }>();
+  let entries: string[];
+  try {
+    entries = await fsp.readdir(subagentDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return index;
+    }
+    throw error;
+  }
+
+  for (const entry of entries) {
+    if (!entry.startsWith('agent-') || !entry.endsWith('.meta.json')) {
+      continue;
+    }
+
+    const agentId = entry.slice('agent-'.length, -'.meta.json'.length);
+    try {
+      const content = await fsp.readFile(path.join(subagentDir, entry), 'utf8');
+      const parsed = JSON.parse(content) as AnyRecord;
+      const toolUseId = typeof parsed.toolUseId === 'string' ? parsed.toolUseId : null;
+      if (!toolUseId) {
+        continue;
+      }
+      index.set(toolUseId, {
+        agentId,
+        agentType: typeof parsed.agentType === 'string' ? parsed.agentType : undefined,
+        description: typeof parsed.description === 'string' ? parsed.description : undefined,
+      });
+    } catch {
+      // Skip unreadable or malformed sidecars; the rest of the transcript is still useful.
+    }
+  }
+
+  return index;
+}
+
 async function getSessionMessages(
   sessionId: string,
   limit: number | null,
@@ -113,9 +162,13 @@ async function getSessionMessages(
       return { messages: [], total: 0, hasMore: false };
     }
 
+    // Claude nests subagent artifacts under `<projectDir>/<sessionId>/subagents/`,
+    // not at the project root. The earlier flat-directory read here meant
+    // historical session reloads silently missed every `subagentTools`
+    // enrichment, leaving Task tool widgets without their child-tool list.
     const projectDir = path.dirname(jsonLPath);
-    const files = await fsp.readdir(projectDir);
-    const agentFiles = files.filter((file) => file.endsWith('.jsonl') && file.startsWith('agent-'));
+    const subagentDir = path.join(projectDir, sessionId, 'subagents');
+    const subagentIndex = await readSubagentIndex(subagentDir);
 
     const messages: AnyRecord[] = [];
     const agentToolsCache = new Map<string, AnyRecord[]>();
@@ -141,34 +194,47 @@ async function getSessionMessages(
       }
     }
 
-    const agentIds = new Set<string>();
+    // Discover which subagents actually appear in this session's tool_result
+    // stream, then pull each one's tool list off disk exactly once.
+    const referencedAgentIds = new Set<string>();
     for (const message of messages) {
-      const agentId = message.toolUseResult?.agentId;
-      if (agentId) {
-        agentIds.add(String(agentId));
+      if (message.message?.role !== 'user' || !Array.isArray(message.message?.content)) {
+        continue;
+      }
+      for (const part of message.message.content) {
+        if (part?.type === 'tool_result' && typeof part.tool_use_id === 'string') {
+          const indexed = subagentIndex.get(part.tool_use_id);
+          if (indexed) {
+            referencedAgentIds.add(indexed.agentId);
+          }
+        }
       }
     }
 
-    for (const agentId of agentIds) {
-      const agentFileName = `agent-${agentId}.jsonl`;
-      if (!agentFiles.includes(agentFileName)) {
-        continue;
-      }
-
-      const agentFilePath = path.join(projectDir, agentFileName);
+    for (const agentId of referencedAgentIds) {
+      const agentFilePath = path.join(subagentDir, `agent-${agentId}.jsonl`);
       const tools = await parseAgentTools(agentFilePath);
       agentToolsCache.set(agentId, tools);
     }
 
+    // Attach the resolved tool list to the raw tool_result row so the
+    // normalizer can copy it onto the corresponding tool_use via the existing
+    // toolResultMap pairing in `fetchHistory`.
     for (const message of messages) {
-      const agentId = message.toolUseResult?.agentId;
-      if (!agentId) {
+      if (message.message?.role !== 'user' || !Array.isArray(message.message?.content)) {
         continue;
       }
-
-      const agentTools = agentToolsCache.get(String(agentId));
-      if (agentTools && agentTools.length > 0) {
-        message.subagentTools = agentTools;
+      for (const part of message.message.content) {
+        if (part?.type === 'tool_result' && typeof part.tool_use_id === 'string') {
+          const indexed = subagentIndex.get(part.tool_use_id);
+          if (!indexed) {
+            continue;
+          }
+          const agentTools = agentToolsCache.get(indexed.agentId);
+          if (agentTools && agentTools.length > 0) {
+            message.subagentTools = agentTools;
+          }
+        }
       }
     }
 
@@ -652,6 +718,134 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       hasMore,
       offset: normalizedOffset,
       limit: normalizedLimit,
+    };
+  }
+
+  /**
+   * Resolves a parent Task `tool_use_id` to the agentId of the subagent it
+   * spawned, by scanning meta sidecars under `<sessionId>/subagents/`.
+   *
+   * Returns null when the sidecar isn't present yet. That's a normal
+   * transient state — the SDK writes the sidecar shortly after the subagent
+   * starts, so the UI re-fetches naturally on a subsequent click.
+   */
+  async resolveAgentIdByToolUseId(
+    parentSessionId: string,
+    toolUseId: string,
+  ): Promise<string | null> {
+    const session = sessionsDb.getSessionById(parentSessionId);
+    const jsonLPath = session?.jsonl_path;
+    if (!jsonLPath) {
+      return null;
+    }
+    const subagentDir = path.join(path.dirname(jsonLPath), parentSessionId, 'subagents');
+    const index = await readSubagentIndex(subagentDir);
+    return index.get(toolUseId)?.agentId ?? null;
+  }
+
+  /**
+   * Reads a subagent's persisted transcript from disk and returns it
+   * normalized through the same pipeline used for parent sessions. Returns
+   * null when the parent session or the subagent file is unknown.
+   *
+   * The returned messages share the parent's `sessionId` (every line in the
+   * subagent jsonl does on disk). The frontend renders them in an isolated
+   * modal — never inserted into the parent session store — so this is fine.
+   */
+  async fetchSubagentTranscript(
+    parentSessionId: string,
+    agentId: string,
+  ): Promise<SubagentTranscript | null> {
+    const session = sessionsDb.getSessionById(parentSessionId);
+    const jsonLPath = session?.jsonl_path;
+    if (!jsonLPath) {
+      return null;
+    }
+
+    const projectDir = path.dirname(jsonLPath);
+    const subagentDir = path.join(projectDir, parentSessionId, 'subagents');
+    const transcriptPath = path.join(subagentDir, `agent-${agentId}.jsonl`);
+    const metaPath = path.join(subagentDir, `agent-${agentId}.meta.json`);
+
+    let meta: AnyRecord | null = null;
+    try {
+      const raw = await fsp.readFile(metaPath, 'utf8');
+      meta = JSON.parse(raw) as AnyRecord;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        console.warn(`[ClaudeProvider] Failed to read subagent meta ${metaPath}:`, error);
+      }
+    }
+
+    const rawMessages: AnyRecord[] = [];
+    try {
+      const fileStream = fs.createReadStream(transcriptPath);
+      const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+      for await (const line of rl) {
+        if (!line.trim()) {
+          continue;
+        }
+        try {
+          rawMessages.push(JSON.parse(line) as AnyRecord);
+        } catch {
+          // Skip malformed lines from concurrent writes.
+        }
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') {
+        return null;
+      }
+      throw error;
+    }
+
+    // Pair tool_use ↔ tool_result inside the subagent transcript so the modal
+    // shows the same widgets the main chat does. Mirrors the logic in
+    // `fetchHistory` but kept local to avoid coupling that signature.
+    const toolResultMap = new Map<string, ClaudeToolResult>();
+    for (const raw of rawMessages) {
+      if (raw.message?.role === 'user' && Array.isArray(raw.message?.content)) {
+        for (const part of raw.message.content) {
+          if (part?.type === 'tool_result' && typeof part.tool_use_id === 'string') {
+            toolResultMap.set(part.tool_use_id, {
+              content: part.content,
+              isError: Boolean(part.is_error),
+              toolUseResult: raw.toolUseResult,
+            });
+          }
+        }
+      }
+    }
+
+    const normalized: NormalizedMessage[] = [];
+    for (const raw of rawMessages) {
+      normalized.push(...this.normalizeMessage(raw, parentSessionId));
+    }
+
+    for (const msg of normalized) {
+      if (msg.kind === 'tool_use' && msg.toolId && toolResultMap.has(msg.toolId)) {
+        const toolResult = toolResultMap.get(msg.toolId);
+        if (!toolResult) {
+          continue;
+        }
+        msg.toolResult = {
+          content: typeof toolResult.content === 'string'
+            ? toolResult.content
+            : JSON.stringify(toolResult.content),
+          isError: toolResult.isError,
+          toolUseResult: toolResult.toolUseResult,
+        };
+      }
+    }
+
+    return {
+      agentId,
+      parentSessionId,
+      agentType: typeof meta?.agentType === 'string' ? meta.agentType : null,
+      description: typeof meta?.description === 'string' ? meta.description : null,
+      toolUseId: typeof meta?.toolUseId === 'string' ? meta.toolUseId : null,
+      messages: normalized,
     };
   }
 }

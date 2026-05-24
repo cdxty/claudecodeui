@@ -207,6 +207,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
                     showRawParameters={showRawParameters}
                     rawToolInput={typeof message.toolInput === 'string' ? message.toolInput : undefined}
                     isSubagentContainer={message.isSubagentContainer}
+                    subagentParentSessionId={message.subagentParentSessionId}
                     subagentState={message.subagentState}
                   />
                 )}

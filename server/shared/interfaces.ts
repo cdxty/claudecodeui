@@ -86,7 +86,39 @@ export interface IProviderMcp {
 export interface IProviderSessions {
   normalizeMessage(raw: unknown, sessionId: string | null): NormalizedMessage[];
   fetchHistory(sessionId: string, options?: FetchHistoryOptions): Promise<FetchHistoryResult>;
+  /**
+   * Fetches a subagent's full persisted transcript. Optional — providers that
+   * don't have a subagent concept return null.
+   */
+  fetchSubagentTranscript?(
+    parentSessionId: string,
+    agentId: string,
+  ): Promise<SubagentTranscript | null>;
+  /**
+   * Resolves a parent Task `tool_use_id` to the subagent `agentId` it
+   * spawned, by reading the provider's on-disk meta sidecars. Returns null
+   * when the link isn't established yet (transient: subagent may not have
+   * started writing yet).
+   */
+  resolveAgentIdByToolUseId?(
+    parentSessionId: string,
+    toolUseId: string,
+  ): Promise<string | null>;
 }
+
+/**
+ * Full normalized transcript of one persisted subagent run, plus the meta
+ * sidecar fields (`agentType`, `description`, `toolUseId`) needed to render
+ * the modal header.
+ */
+export type SubagentTranscript = {
+  agentId: string;
+  parentSessionId: string;
+  agentType: string | null;
+  description: string | null;
+  toolUseId: string | null;
+  messages: NormalizedMessage[];
+};
 
 // ---------------------------
 //----------------- PROVIDER SESSION SYNCHRONIZER INTERFACE ------------
