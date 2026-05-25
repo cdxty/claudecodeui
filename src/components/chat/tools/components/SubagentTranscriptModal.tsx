@@ -69,16 +69,23 @@ export const SubagentTranscriptModal: React.FC<SubagentTranscriptModalProps> = (
       return;
     }
     let cancelled = false;
+    let inFlight = false;
+    // Reset before the first fetch so a previous transcript can't leak in
+    // when the modal is reopened against a different tool_use_id.
+    setTranscript(null);
+    setStatus('loading');
+    setErrorMessage(null);
 
-    const load = async () => {
-      setStatus('loading');
-      setErrorMessage(null);
+    // One tick of the poll loop. `isInitial` only governs which states the
+    // user actually sees: background polls never flip the modal back to a
+    // loading/error placeholder if we already have a transcript on screen.
+    const fetchOnce = async (isInitial: boolean) => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const response = await api.subagentTranscriptByToolUse(parentSessionId, toolUseId);
+        if (cancelled) return;
         if (response.status === 404) {
-          // Parse the error envelope to distinguish "not ready" (sidecar
-          // hasn't been written yet — normal during a live run) from a real
-          // 404 we want to surface as an error.
           let code: string | undefined;
           try {
             const body = await response.json();
@@ -88,28 +95,55 @@ export const SubagentTranscriptModal: React.FC<SubagentTranscriptModalProps> = (
           }
           if (cancelled) return;
           if (code === 'SUBAGENT_NOT_READY') {
-            setStatus('not-ready');
+            if (isInitial) setStatus('not-ready');
             return;
           }
-          throw new Error(`Subagent transcript not found (${response.status})`);
+          if (isInitial) {
+            setErrorMessage(`Subagent transcript not found (${response.status})`);
+            setStatus('error');
+          }
+          return;
         }
         if (!response.ok) {
-          throw new Error(`Failed to load transcript (${response.status})`);
+          if (isInitial) {
+            setErrorMessage(`Failed to load transcript (${response.status})`);
+            setStatus('error');
+          }
+          return;
         }
         const data = (await response.json()) as SubagentTranscript;
         if (cancelled) return;
-        setTranscript(data);
+        setTranscript((prev) => {
+          // Skip the state update when nothing changed — keeps React from
+          // re-rendering the transcript list, which keeps the user's scroll
+          // position perfectly stable while they're reading.
+          if (
+            prev &&
+            prev.messages.length === data.messages.length &&
+            prev.messages[prev.messages.length - 1]?.id ===
+              data.messages[data.messages.length - 1]?.id
+          ) {
+            return prev;
+          }
+          return data;
+        });
         setStatus('ready');
       } catch (err) {
         if (cancelled) return;
-        setErrorMessage(err instanceof Error ? err.message : 'Failed to load transcript');
-        setStatus('error');
+        if (isInitial) {
+          setErrorMessage(err instanceof Error ? err.message : 'Failed to load transcript');
+          setStatus('error');
+        }
+      } finally {
+        inFlight = false;
       }
     };
 
-    load();
+    fetchOnce(true);
+    const interval = setInterval(() => fetchOnce(false), 1000);
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
   }, [open, parentSessionId, toolUseId, reloadKey]);
 
